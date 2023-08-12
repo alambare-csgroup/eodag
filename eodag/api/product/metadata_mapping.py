@@ -16,6 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import ast
+import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -302,6 +303,25 @@ def format_metadata(search_param, *args, **kwargs):
                 return [list(input_geom.bounds[0:4])]
 
         @staticmethod
+        def convert_to_bounds(input_geom):
+            if isinstance(input_geom, MultiPolygon):
+                geoms = [geom for geom in input_geom.geoms]
+                # sort with larger one at first (stac-browser only plots first one)
+                geoms.sort(key=lambda x: x.area, reverse=True)
+                min_lon = 180
+                min_lat = 90
+                max_lon = -180
+                max_lat = -90
+                for geom in geoms:
+                    min_lon = min(min_lon, geom.bound[0])
+                    min_lat = min(min_lat, geom.bound[1])
+                    max_lon = max(max_lon, geom.bound[2])
+                    max_lat = max(max_lat, geom.bound[3])
+                return [min_lon, min_lat, max_lon, max_lat]
+            else:
+                return list(input_geom.bounds[0:4])
+
+        @staticmethod
         def convert_to_nwse_bounds(input_geom):
             return list(input_geom.bounds[-1:] + input_geom.bounds[:-1])
 
@@ -533,6 +553,23 @@ def format_metadata(search_param, *args, **kwargs):
             return params
 
         @staticmethod
+        def convert_get_processing_level_from_s1_id(product_id):
+            parts = re.split(r"_(?!_)", product_id)
+            level = "LEVEL" + parts[3][0]
+            return level
+
+        @staticmethod
+        def convert_get_sensor_mode_from_s1_id(product_id):
+            parts = re.split(r"_(?!_)", product_id)
+            return parts[1]
+
+        @staticmethod
+        def convert_get_processing_level_from_s2_id(product_id):
+            parts = re.split(r"_(?!_)", product_id)
+            processing_level = "S2" + parts[1]
+            return processing_level
+
+        @staticmethod
         def convert_split_id_into_s3_params(product_id):
             parts = re.split(r"_(?!_)", product_id)
             params = {"productType": product_id[4:15]}
@@ -567,6 +604,12 @@ def format_metadata(search_param, *args, **kwargs):
             return params
 
         @staticmethod
+        def convert_get_processing_level_from_s5p_id(product_id):
+            parts = re.split(r"_(?!_)", product_id)
+            processing_level = parts[2].replace("_", "")
+            return processing_level
+
+        @staticmethod
         def convert_split_cop_dem_id(product_id):
             parts = product_id.split("_")
             lattitude = parts[3]
@@ -582,31 +625,1601 @@ def format_metadata(search_param, *args, **kwargs):
             bbox = [long_num - 1, lat_num - 1, long_num + 1, lat_num + 1]
             return bbox
 
-        # @staticmethod
-        # def convert_get_corine_product_type(start_date, end_date):
-        #     start_year = start_date[:4]
-        #     end_year = end_date[:4]
-        #     print(start_year, end_year)
-        #     years = [1990, 2000, 2006, 2012, 2018]
-        #     if start_year == end_year and int(start_year) in years:
-        #         product_type = "Corine Land Cover " + start_year
-        #     else:
-        #         max_interception = 0
-        #         sel_years = [1990, 2000]
-        #         for i, year in enumerate(years[:-1]):
-        #             if int(end_year) < years[i+1] and i == 0:
-        #                 sel_years = [year, years[i+1]]
-        #                 break
-        #             elif int(start_year) > years[i+1]:
-        #                 continue
-        #             else:
-        #                 interception = min(years[i+1], int(end_year)) - max(year, int(start_year))
-        #                 if interception > max_interception:
-        #                     max_interception = interception
-        #                     sel_years = [year, years[i+1]]
-        #         product_type = "Corine Land Change " + str(sel_years[0]) + " " + str(sel_years[1])
-        #
-        #     return product_type
+        @staticmethod
+        def convert_get_corine_product_type(start_date, end_date):
+            start_year = start_date[:4]
+            end_year = end_date[:4]
+            years = [1990, 2000, 2006, 2012, 2018]
+            if start_year == end_year and int(start_year) in years:
+                product_type = "Corine Land Cover " + start_year
+            elif int(start_year) > years[-1]:
+                product_type = "Corine Land Cover " + str(years[-1])
+            else:
+                max_interception = 0
+                sel_years = [1990, 2000]
+                for i, year in enumerate(years[:-1]):
+                    if int(end_year) < years[i + 1] and i == 0:
+                        sel_years = [year, years[i + 1]]
+                        break
+                    elif int(start_year) > years[i + 1]:
+                        continue
+                    else:
+                        interception = min(years[i + 1], int(end_year)) - max(
+                            year, int(start_year)
+                        )
+                        if interception > max_interception:
+                            max_interception = interception
+                            sel_years = [year, years[i + 1]]
+                product_type = (
+                    "Corine Land Change " + str(sel_years[0]) + " " + str(sel_years[1])
+                )
+
+            return product_type
+
+        @staticmethod
+        def convert_split_corine_id(product_id):
+            if "clc" in product_id:
+                year = product_id.split("_")[1][3:]
+                product_type = "Corine Land Cover " + year
+            else:
+                years = [1990, 2000, 2006, 2012, 2018]
+                end_year = product_id[1:5]
+                i = years.index(int(end_year))
+                start_year = str(years[i - 1])
+                product_type = "Corine Land Change " + start_year + " " + end_year
+            return product_type
+
+        @staticmethod
+        def convert_get_ecmwf_efas_reforecast_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            product_type = [
+                "control_forecast",
+                "ensemble_perturbed_forecasts"
+            ]
+            multi_strings = [
+                {"name": "soil_level", "value": ["1","2","3"]},
+                {"name": "hmonth", "value": [month]},
+                {"name": "hyear", "value": [year]},
+                {"name": "leadtime_hour", "value": [
+                    "0",
+                    "6",
+                    "12",
+                    "18",
+                    "24",
+                    "30",
+                    "36",
+                    "42",
+                    "48",
+                    "54",
+                    "60",
+                    "66",
+                    "72",
+                    "78",
+                    "84",
+                    "90",
+                    "96",
+                    "102",
+                    "108",
+                    "114",
+                    "120",
+                    "126",
+                    "132",
+                    "138",
+                    "144",
+                    "150",
+                    "156",
+                    "162",
+                    "168",
+                    "174",
+                    "180",
+                    "186",
+                    "192",
+                    "198",
+                    "204",
+                    "210",
+                    "216",
+                    "222",
+                    "228",
+                    "234",
+                    "240",
+                    "246",
+                    "252",
+                    "258",
+                    "264",
+                    "270",
+                    "276",
+                    "282",
+                    "288",
+                    "294",
+                    "300",
+                    "306",
+                    "312",
+                    "318",
+                    "324",
+                    "330",
+                    "336",
+                    "342",
+                    "348",
+                    "354",
+                    "360",
+                    "366",
+                    "372",
+                    "378",
+                    "384",
+                    "390",
+                    "396",
+                    "402",
+                    "408",
+                    "414",
+                    "420",
+                    "426",
+                    "432",
+                    "438",
+                    "444",
+                    "450",
+                    "456",
+                    "462",
+                    "468",
+                    "474",
+                    "480",
+                    "486",
+                    "492",
+                    "498",
+                    "504",
+                    "510",
+                    "516",
+                    "522",
+                    "528",
+                    "534",
+                    "540",
+                    "546",
+                    "552",
+                    "558",
+                    "564",
+                    "570",
+                    "576",
+                    "582",
+                    "588",
+                    "594",
+                    "600",
+                    "606",
+                    "612",
+                    "618",
+                    "624",
+                    "630",
+                    "636",
+                    "642",
+                    "648",
+                    "654",
+                    "660",
+                    "666",
+                    "672",
+                    "678",
+                    "684",
+                    "690",
+                    "696",
+                    "702",
+                    "708",
+                    "714",
+                    "720",
+                    "726",
+                    "732",
+                    "738",
+                    "744",
+                    "750",
+                    "756",
+                    "762",
+                    "768",
+                    "774",
+                    "780",
+                    "786",
+                    "792",
+                    "798",
+                    "804",
+                    "810",
+                    "816",
+                    "822",
+                    "828",
+                    "834",
+                    "840",
+                    "846",
+                    "852",
+                    "858",
+                    "864",
+                    "870",
+                    "876",
+                    "882",
+                    "888",
+                    "894",
+                    "900",
+                    "906",
+                    "912",
+                    "918",
+                    "924",
+                    "930",
+                    "936",
+                    "942",
+                    "948",
+                    "954",
+                    "960",
+                    "966",
+                    "972",
+                    "978",
+                    "984",
+                    "990",
+                    "996",
+                    "1002",
+                    "1008",
+                    "1014",
+                    "1020",
+                    "1026",
+                    "1032",
+                    "1038",
+                    "1044",
+                    "1050",
+                    "1056",
+                    "1062",
+                    "1068",
+                    "1074",
+                    "1080",
+                    "1086",
+                    "1092",
+                    "1098",
+                    "1104"
+                ]
+                },
+                {"name": "hday", "value": [day]},
+                {"name": "product_type", "value": product_type},
+            ]
+            string_choices = [
+                            {"name": "variable", "value": "volumetric_soil_moisture"},
+                            {"name": "model_levels", "value": "soil_levels"},
+                            {"name": "format", "value": "grib.zip"}
+            ]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_efas_seasonal_reforecast_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            multi_strings = [
+                {"name": "soil_level", "value": ["1","2","3"]},
+                {"name": "hyear", "value": [year]},
+                {"name": "hmonth", "value": [month]},
+                {"name": "leadtime_hour", "value": [
+                        "24",
+                        "48",
+                        "72",
+                        "96",
+                        "120",
+                        "144",
+                        "168",
+                        "192",
+                        "216",
+                        "240",
+                        "264",
+                        "288",
+                        "312",
+                        "336",
+                        "360",
+                        "384",
+                        "408",
+                        "432",
+                        "456",
+                        "480",
+                        "504",
+                        "528",
+                        "552",
+                        "576",
+                        "600",
+                        "624",
+                        "648",
+                        "672",
+                        "696",
+                        "720",
+                        "744",
+                        "768",
+                        "792",
+                        "816",
+                        "840",
+                        "864",
+                        "888",
+                        "912",
+                        "936",
+                        "960",
+                        "984",
+                        "1008",
+                        "1032",
+                        "1056",
+                        "1080",
+                        "1104",
+                        "1128",
+                        "1152",
+                        "1176",
+                        "1200",
+                        "1224",
+                        "1248",
+                        "1272",
+                        "1296",
+                        "1320",
+                        "1344",
+                        "1368",
+                        "1392",
+                        "1416",
+                        "1440",
+                        "1464",
+                        "1488",
+                        "1512",
+                        "1536",
+                        "1560",
+                        "1584",
+                        "1608",
+                        "1632",
+                        "1656",
+                        "1680",
+                        "1704",
+                        "1728",
+                        "1752",
+                        "1776",
+                        "1800",
+                        "1824",
+                        "1848",
+                        "1872",
+                        "1896",
+                        "1920",
+                        "1944",
+                        "1968",
+                        "1992",
+                        "2016",
+                        "2040",
+                        "2064",
+                        "2088",
+                        "2112",
+                        "2136",
+                        "2160",
+                        "2184",
+                        "2208",
+                        "2232",
+                        "2256",
+                        "2280",
+                        "2304",
+                        "2328",
+                        "2352",
+                        "2376",
+                        "2400",
+                        "2424",
+                        "2448",
+                        "2472",
+                        "2496",
+                        "2520",
+                        "2544",
+                        "2568",
+                        "2592",
+                        "2616",
+                        "2640",
+                        "2664",
+                        "2688",
+                        "2712",
+                        "2736",
+                        "2760",
+                        "2784",
+                        "2808",
+                        "2832",
+                        "2856",
+                        "2880",
+                        "2904",
+                        "2928",
+                        "2952",
+                        "2976",
+                        "3000",
+                        "3024",
+                        "3048",
+                        "3072",
+                        "3096",
+                        "3120",
+                        "3144",
+                        "3168",
+                        "3192",
+                        "3216",
+                        "3240",
+                        "3264",
+                        "3288",
+                        "3312",
+                        "3336",
+                        "3360",
+                        "3384",
+                        "3408",
+                        "3432",
+                        "3456",
+                        "3480",
+                        "3504",
+                        "3528",
+                        "3552",
+                        "3576",
+                        "3600",
+                        "3624",
+                        "3648",
+                        "3672",
+                        "3696",
+                        "3720",
+                        "3744",
+                        "3768",
+                        "3792",
+                        "3816",
+                        "3840",
+                        "3864",
+                        "3888",
+                        "3912",
+                        "3936",
+                        "3960",
+                        "3984",
+                        "4008",
+                        "4032",
+                        "4056",
+                        "4080",
+                        "4104",
+                        "4128",
+                        "4152",
+                        "4176",
+                        "4200",
+                        "4224",
+                        "4248",
+                        "4272",
+                        "4296",
+                        "4320",
+                        "4344",
+                        "4368",
+                        "4392",
+                        "4416",
+                        "4440",
+                        "4464",
+                        "4488",
+                        "4512",
+                        "4536",
+                        "4560",
+                        "4584",
+                        "4608",
+                        "4632",
+                        "4656",
+                        "4680",
+                        "4704",
+                        "4728",
+                        "4752",
+                        "4776",
+                        "4800",
+                        "4824",
+                        "4848",
+                        "4872",
+                        "4896",
+                        "4920",
+                        "4944",
+                        "4968",
+                        "4992",
+                        "5016",
+                        "5040",
+                        "5064",
+                        "5088",
+                        "5112",
+                        "5136",
+                        "5160"
+                    ]
+                },
+            ]
+            string_choices = [{"name": "variable", "value": "volumetric_soil_moisture"},
+                              {"name": "model_levels", "value": "soil_levels"},
+                              {"name": "format", "value": "grib.zip"}
+                            ]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_glofas_reforecast_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            product_type = [
+                "control_reforecast",
+                "ensemble_perturbed_reforecasts"
+            ]
+            multi_strings = [
+                {"name": "variable", "value": ["river_discharge_in_the_last_24_hours"]},
+                {"name": "system_version", "value": ["version_4_0","version_2_2","version_3_1"]},
+                {"name": "hydrological_model", "value": ["htessel_lisflood","lisflood"]},
+                {"name": "hyear", "value": [year]},
+                {"name": "hmonth", "value": [month]},
+                {"name": "hday", "value": [day]},
+                {"name": "leadtime_hour", "value": [
+                        "24",
+                        "48",
+                        "72",
+                        "96",
+                        "120",
+                        "144",
+                        "168",
+                        "192",
+                        "216",
+                        "240",
+                        "264",
+                        "288",
+                        "312",
+                        "336",
+                        "360",
+                        "384",
+                        "408",
+                        "432",
+                        "456",
+                        "480",
+                        "504",
+                        "528",
+                        "552",
+                        "576",
+                        "600",
+                        "624",
+                        "648",
+                        "672",
+                        "696",
+                        "720",
+                        "744",
+                        "768",
+                        "792",
+                        "816",
+                        "840",
+                        "864",
+                        "888",
+                        "912",
+                        "936",
+                        "960",
+                        "984",
+                        "1008",
+                        "1032",
+                        "1056",
+                        "1080",
+                        "1104"
+                    ]
+                },
+                {"name": "product_type", "value": product_type},
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_glofas_seasonal_reforecast_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            multi_strings = [
+                {"name": "variable", "value": ["river_discharge_in_the_last_24_hours"]},
+                {"name": "system_version", "value": ["version_2_2","version_3_1"]},
+                {"name": "hydrological_model", "value": ["htessel_lisflood","lisflood"]},
+                {"name": "hyear", "value": [year]},
+                {"name": "hmonth", "value": [month]},
+                {"name": "leadtime_hour", "value": [
+                        "24",
+                        "48",
+                        "72",
+                        "96",
+                        "120",
+                        "144",
+                        "168",
+                        "192",
+                        "216",
+                        "240",
+                        "264",
+                        "288",
+                        "312",
+                        "336",
+                        "360",
+                        "384",
+                        "408",
+                        "432",
+                        "456",
+                        "480",
+                        "504",
+                        "528",
+                        "552",
+                        "576",
+                        "600",
+                        "624",
+                        "648",
+                        "672",
+                        "696",
+                        "720",
+                        "744",
+                        "768",
+                        "792",
+                        "816",
+                        "840",
+                        "864",
+                        "888",
+                        "912",
+                        "936",
+                        "960",
+                        "984",
+                        "1008",
+                        "1032",
+                        "1056",
+                        "1080",
+                        "1104",
+                        "1128",
+                        "1152",
+                        "1176",
+                        "1200",
+                        "1224",
+                        "1248",
+                        "1272",
+                        "1296",
+                        "1320",
+                        "1344",
+                        "1368",
+                        "1392",
+                        "1416",
+                        "1440",
+                        "1464",
+                        "1488",
+                        "1512",
+                        "1536",
+                        "1560",
+                        "1584",
+                        "1608",
+                        "1632",
+                        "1656",
+                        "1680",
+                        "1704",
+                        "1728",
+                        "1752",
+                        "1776",
+                        "1800",
+                        "1824",
+                        "1848",
+                        "1872",
+                        "1896",
+                        "1920",
+                        "1944",
+                        "1968",
+                        "1992",
+                        "2016",
+                        "2040",
+                        "2064",
+                        "2088",
+                        "2112",
+                        "2136",
+                        "2160",
+                        "2184",
+                        "2208",
+                        "2232",
+                        "2256",
+                        "2280",
+                        "2304",
+                        "2328",
+                        "2352",
+                        "2376",
+                        "2400",
+                        "2424",
+                        "2448",
+                        "2472",
+                        "2496",
+                        "2520",
+                        "2544",
+                        "2568",
+                        "2592",
+                        "2616",
+                        "2640",
+                        "2664",
+                        "2688",
+                        "2712",
+                        "2736",
+                        "2760",
+                        "2784",
+                        "2808",
+                        "2832",
+                        "2856",
+                        "2880",
+                        "2904",
+                        "2928",
+                        "2952",
+                        "2976",
+                        "3000",
+                        "3024",
+                        "3048",
+                        "3072",
+                        "3096",
+                        "3120",
+                        "3144",
+                        "3168",
+                        "3192",
+                        "3216",
+                        "3240",
+                        "3264",
+                        "3288",
+                        "3312",
+                        "3336",
+                        "3360",
+                        "3384",
+                        "3408",
+                        "3432",
+                        "3456",
+                        "3480",
+                        "3504",
+                        "3528",
+                        "3552",
+                        "3576",
+                        "3600",
+                        "3624",
+                        "3648",
+                        "3672",
+                        "3696",
+                        "3720",
+                        "3744",
+                        "3768",
+                        "3792",
+                        "3816",
+                        "3840",
+                        "3864",
+                        "3888",
+                        "3912",
+                        "3936",
+                        "3960",
+                        "3984",
+                        "4008",
+                        "4032",
+                        "4056",
+                        "4080",
+                        "4104",
+                        "4128",
+                        "4152",
+                        "4176",
+                        "4200",
+                        "4224",
+                        "4248",
+                        "4272",
+                        "4296",
+                        "4320",
+                        "4344",
+                        "4368",
+                        "4392",
+                        "4416",
+                        "4440",
+                        "4464",
+                        "4488",
+                        "4512",
+                        "4536",
+                        "4560",
+                        "4584",
+                        "4608",
+                        "4632",
+                        "4656",
+                        "4680",
+                        "4704",
+                        "4728",
+                        "4752",
+                        "4776",
+                        "4800",
+                        "4824",
+                        "4848",
+                        "4872",
+                        "4896",
+                        "4920",
+                        "4944",
+                        "4968",
+                        "4992",
+                        "5016",
+                        "5040",
+                        "5064",
+                        "5088",
+                        "5112",
+                        "5136",
+                        "5160"
+                    ]
+                },
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+            
+        @staticmethod
+        def convert_get_ecmwf_glofas_seasonal_reforecast_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            multi_strings = [
+                {"name": "variable", "value": ["river_discharge_in_the_last_24_hours"]},
+                {"name": "system_version", "value": ["version_2_2","version_3_1"]},
+                {"name": "hydrological_model", "value": ["htessel_lisflood","lisflood"]},
+                {"name": "hyear", "value": [year]},
+                {"name": "hmonth", "value": [month]},
+                {"name": "leadtime_hour", "value": [
+                        "24",
+                        "48",
+                        "72",
+                        "96",
+                        "120",
+                        "144",
+                        "168",
+                        "192",
+                        "216",
+                        "240",
+                        "264",
+                        "288",
+                        "312",
+                        "336",
+                        "360",
+                        "384",
+                        "408",
+                        "432",
+                        "456",
+                        "480",
+                        "504",
+                        "528",
+                        "552",
+                        "576",
+                        "600",
+                        "624",
+                        "648",
+                        "672",
+                        "696",
+                        "720",
+                        "744",
+                        "768",
+                        "792",
+                        "816",
+                        "840",
+                        "864",
+                        "888",
+                        "912",
+                        "936",
+                        "960",
+                        "984",
+                        "1008",
+                        "1032",
+                        "1056",
+                        "1080",
+                        "1104",
+                        "1128",
+                        "1152",
+                        "1176",
+                        "1200",
+                        "1224",
+                        "1248",
+                        "1272",
+                        "1296",
+                        "1320",
+                        "1344",
+                        "1368",
+                        "1392",
+                        "1416",
+                        "1440",
+                        "1464",
+                        "1488",
+                        "1512",
+                        "1536",
+                        "1560",
+                        "1584",
+                        "1608",
+                        "1632",
+                        "1656",
+                        "1680",
+                        "1704",
+                        "1728",
+                        "1752",
+                        "1776",
+                        "1800",
+                        "1824",
+                        "1848",
+                        "1872",
+                        "1896",
+                        "1920",
+                        "1944",
+                        "1968",
+                        "1992",
+                        "2016",
+                        "2040",
+                        "2064",
+                        "2088",
+                        "2112",
+                        "2136",
+                        "2160",
+                        "2184",
+                        "2208",
+                        "2232",
+                        "2256",
+                        "2280",
+                        "2304",
+                        "2328",
+                        "2352",
+                        "2376",
+                        "2400",
+                        "2424",
+                        "2448",
+                        "2472",
+                        "2496",
+                        "2520",
+                        "2544",
+                        "2568",
+                        "2592",
+                        "2616",
+                        "2640",
+                        "2664",
+                        "2688",
+                        "2712",
+                        "2736",
+                        "2760",
+                        "2784",
+                        "2808",
+                        "2832",
+                        "2856",
+                        "2880",
+                        "2904",
+                        "2928",
+                        "2952",
+                        "2976",
+                        "3000",
+                        "3024",
+                        "3048",
+                        "3072",
+                        "3096",
+                        "3120",
+                        "3144",
+                        "3168",
+                        "3192",
+                        "3216",
+                        "3240",
+                        "3264",
+                        "3288",
+                        "3312",
+                        "3336",
+                        "3360",
+                        "3384",
+                        "3408",
+                        "3432",
+                        "3456",
+                        "3480",
+                        "3504",
+                        "3528",
+                        "3552",
+                        "3576",
+                        "3600",
+                        "3624",
+                        "3648",
+                        "3672",
+                        "3696",
+                        "3720",
+                        "3744",
+                        "3768",
+                        "3792",
+                        "3816",
+                        "3840",
+                        "3864",
+                        "3888",
+                        "3912",
+                        "3936",
+                        "3960",
+                        "3984",
+                        "4008",
+                        "4032",
+                        "4056",
+                        "4080",
+                        "4104",
+                        "4128",
+                        "4152",
+                        "4176",
+                        "4200",
+                        "4224",
+                        "4248",
+                        "4272",
+                        "4296",
+                        "4320",
+                        "4344",
+                        "4368",
+                        "4392",
+                        "4416",
+                        "4440",
+                        "4464",
+                        "4488",
+                        "4512",
+                        "4536",
+                        "4560",
+                        "4584",
+                        "4608",
+                        "4632",
+                        "4656",
+                        "4680",
+                        "4704",
+                        "4728",
+                        "4752",
+                        "4776",
+                        "4800",
+                        "4824",
+                        "4848",
+                        "4872",
+                        "4896",
+                        "4920",
+                        "4944",
+                        "4968",
+                        "4992",
+                        "5016",
+                        "5040",
+                        "5064",
+                        "5088",
+                        "5112",
+                        "5136",
+                        "5160"
+                    ]
+                },
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_sis_params(start_date, end_date):
+            start_year = max(int(start_date[:4]), 1970)
+            end_year = min(int(end_date[:4]), 2100)
+            slices = [[1971, 2000], [2011, 2040], [2041, 2070], [2071, 2100]]
+            variable_type = "absolute_values"
+            horizontal_resolution = "5_km"
+            processing_type = "bias_corrected"
+            if [start_year, end_year] in slices:
+                product_type = "climate_impact_indicators"
+                time_aggregation = ["annual_mean", "monthly_mean"]
+                variable = [
+                    "2m_air_temperature",
+                    "highest_5_day_precipitation_amount",
+                    "longest_dry_spells",
+                    "number_of_dry_spells",
+                    "precipitation",
+                ]
+                if end_year == 2000:
+                    experiment = ["historical"]
+                else:
+                    experiment = ["rcp_2_6", "rcp_8_5", "rcp_4_5"]
+                period = [str(start_year) + "_" + str(end_year)]
+                ensemble_member = ["r12i1p1", "r1i1p1", "r2i1p1"]
+            else:
+                product_type = "essential_climate_variables"
+                time_aggregation = ["daily"]
+                variable = [
+                    "2m_air_temperature",
+                    "precipitation",
+                ]  # variables available for this product type
+                if end_year <= 2005:
+                    experiment = ["historical"]
+                else:
+                    experiment = ["rcp_2_6", "rcp_8_5", "rcp_4_5"]
+                period = []
+                for y in range(start_year, end_year + 1):
+                    period.append(str(y))
+                ensemble_member = ["r12i1p1"]
+            params = {
+                "stringChoiceValues": [
+                    {"name": "product_type", "value": product_type},
+                    {"name": "processing_type", "value": processing_type},
+                    {"name": "variable_type", "value": variable_type},
+                    {"name": "horizontal_resolution", "value": horizontal_resolution},
+                    {"name": "rcm", "value": "cclm4_8_17"},
+                    {"name": "gcm", "value": "ec_earth"},
+                    {"name": "format", "value": "zip"},
+                ],
+                "multiStringSelectValues": [
+                    {"name": "variable", "value": variable},
+                    {"name": "experiment", "value": experiment},
+                    {"name": "period", "value": period},
+                    {"name": "time_aggregation", "value": time_aggregation},
+                    {"name": "ensemble_member", "value": ensemble_member},
+                ],
+            }
+            return {
+                "multiStringSelectValues": params["multiStringSelectValues"],
+                "stringChoiceValues": params["stringChoiceValues"],
+            }
+
+        @staticmethod
+        def convert_get_ecmwf_fire_historical_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            product_type = [
+                "ensemble_spread",
+                "ensemble_mean",
+                "ensemble_members",
+                "reanalysis",
+            ]
+            multi_strings = [
+                {"name": "month", "value": [month]},
+                {"name": "year", "value": [year]},
+                {"name": "day", "value": [day]},
+                {
+                    "name": "variable",
+                    "value": [
+                        "build_up_index",
+                        "danger_risk",
+                        "drought_code",
+                        "duff_moisture_code",
+                        "fine_fuel_moisture_code",
+                        "fire_daily_severity_rating",
+                        "fire_weather_index",
+                        "initial_fire_spread_index",
+                        "fire_danger_index",
+                        "keetch_byram_drought_index",
+                        "burning_index",
+                        "energy_release_component",
+                        "ignition_component",
+                        "spread_component"
+                    ],
+                },
+                {"name": "version", "value": ["3.0","3.1","4.0"]},
+                {"name": "dataset", "value": ["Consolidated dataset", "Intermediate dataset"]},
+                {"name": "product_type", "value": product_type},
+            ]
+            string_choices = [{"name": "format", "value": "tgz"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_era5pl_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            hour = start_date[11:14] + "00"
+            hour_num = int(start_date[11:13])
+            if hour_num % 3 == 0:
+                product_type = [
+                    "ensemble_spread",
+                    "ensemble_mean",
+                    "ensemble_members",
+                    "reanalysis",
+                ]
+            else:
+                product_type = ["reanalysis"]
+            multi_strings = [
+                {"name": "month", "value": [month]},
+                {"name": "year", "value": [year]},
+                {
+                    "name": "pressure_level",
+                    "value": [
+                        "1",
+                        "2",
+                        "3",
+                        "5",
+                        "7",
+                        "10",
+                        "20",
+                        "30",
+                        "50",
+                        "70",
+                        "100",
+                        "125",
+                        "150",
+                        "175",
+                        "200",
+                        "225",
+                        "250",
+                        "300",
+                        "350",
+                        "400",
+                        "450",
+                        "500",
+                        "550",
+                        "600",
+                        "650",
+                        "700",
+                        "750",
+                        "775",
+                        "800",
+                        "825",
+                        "850",
+                        "875",
+                        "900",
+                        "925",
+                        "950",
+                        "975",
+                        "1000",
+                    ],
+                },
+                {"name": "time", "value": [hour]},
+                {"name": "day", "value": [day]},
+                {
+                    "name": "variable",
+                    "value": [
+                        "divergence",
+                        "fraction_of_cloud_cover",
+                        "geopotential",
+                        "ozone_mass_mixing_ratio",
+                        "potential_vorticity",
+                        "relative_humidity",
+                        "specific_cloud_ice_water_content",
+                        "specific_cloud_liquid_water_content",
+                        "specific_humidity",
+                        "specific_rain_water_content",
+                        "specific_snow_water_content",
+                        "temperature",
+                        "u_component_of_wind",
+                        "v_component_of_wind",
+                        "vertical_velocity",
+                        "vorticity",
+                    ],
+                },
+                {"name": "product_type", "value": product_type},
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_era5pl_monthly_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            hour = start_date[11:14] + "00"
+            hour_num = int(start_date[11:13])
+            product_type = [
+                "monthly_averaged_ensemble_members",
+                "monthly_averaged_ensemble_members_by_hour_of_day",
+                "monthly_averaged_reanalysis",
+                "monthly_averaged_reanalysis_by_hour_of_day"
+            ]
+            multi_strings = [
+                {"name": "month", "value": [month]},
+                {"name": "year", "value": [year]},
+                {
+                    "name": "pressure_level",
+                    "value": [
+                        "1",
+                        "2",
+                        "3",
+                        "5",
+                        "7",
+                        "10",
+                        "20",
+                        "30",
+                        "50",
+                        "70",
+                        "100",
+                        "125",
+                        "150",
+                        "175",
+                        "200",
+                        "225",
+                        "250",
+                        "300",
+                        "350",
+                        "400",
+                        "450",
+                        "500",
+                        "550",
+                        "600",
+                        "650",
+                        "700",
+                        "750",
+                        "775",
+                        "800",
+                        "825",
+                        "850",
+                        "875",
+                        "900",
+                        "925",
+                        "950",
+                        "975",
+                        "1000",
+                    ],
+                },
+                {"name": "time", "value": [hour]},
+                {"name": "day", "value": [day]},
+                {
+                    "name": "variable",
+                    "value": [
+                        "divergence",
+                        "fraction_of_cloud_cover",
+                        "geopotential",
+                        "ozone_mass_mixing_ratio",
+                        "potential_vorticity",
+                        "relative_humidity",
+                        "specific_cloud_ice_water_content",
+                        "specific_cloud_liquid_water_content",
+                        "specific_humidity",
+                        "specific_rain_water_content",
+                        "specific_snow_water_content",
+                        "temperature",
+                        "u_component_of_wind",
+                        "v_component_of_wind",
+                        "vertical_velocity",
+                        "vorticity",
+                    ],
+                },
+                {"name": "product_type", "value": product_type},
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+
+        @staticmethod
+        def convert_get_ecmwf_era5land_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            hour = start_date[11:14] + "00"
+            multi_strings = [
+                {
+                    "name": "variable",
+                    "value": [
+                        "evaporation_from_bare_soil",
+                        "evaporation_from_open_water_surfaces_excluding_oceans",
+                        "evaporation_from_the_top_of_canopy",
+                        "evaporation_from_vegetation_transpiration",
+                        "potential_evaporation",
+                        "runoff",
+                        "snow_evaporation",
+                        "sub_surface_runoff",
+                        "surface_runoff",
+                        "total_evaporation",
+                        "10m_u_component_of_wind",
+                        "10m_v_component_of_wind",
+                        "surface_pressure",
+                        "total_precipitation",
+                        "leaf_area_index_high_vegetation",
+                        "leaf_area_index_low_vegetation",
+                    ],
+                },
+                {"name": "day", "value": [day]},
+                {"name": "time", "value": [hour]},
+            ]
+            string_choices = [
+                {"name": "format", "value": "grib"},
+                {"name": "year", "value": year},
+                {"name": "month", "value": month},
+            ]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+
+        @staticmethod
+        def convert_get_ecmwf_era5sl_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            hour = start_date[11:14] + "00"
+            hour_num = int(start_date[11:13])
+            if hour_num % 3 == 0:
+                product_type = [
+                    "ensemble_spread",
+                    "ensemble_mean",
+                    "ensemble_members",
+                    "reanalysis",
+                ]
+            else:
+                product_type = ["reanalysis", "ensemble_members"]
+            multi_strings = [
+                {"name": "time", "value": [hour]},
+                {"name": "day", "value": [day]},
+                {"name": "month", "value": [month]},
+                {"name": "year", "value": [year]},
+                {
+                    "name": "variable",
+                    "value": [
+                        "10m_u_component_of_wind",
+                        "10m_v_component_of_wind",
+                        "2m_dewpoint_temperature",
+                        "2m_temperature",
+                        "mean_sea_level_pressure",
+                        "mean_wave_direction",
+                        "mean_wave_period",
+                        "sea_surface_temperature",
+                        "significant_height_of_combined_wind_waves_and_swell",
+                        "surface_pressure",
+                        "total_precipitation",
+                    ],
+                },
+                {"name": "product_type", "value": product_type},
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_era5sl_monthly_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            hour = start_date[11:14] + "00"
+            hour_num = int(start_date[11:13])
+            if hour_num % 3 == 0:
+                product_type = [
+                    "monthly_averaged_ensemble_members",
+                    "monthly_averaged_ensemble_members_by_hour_of_day",
+                ]
+            else:
+                product_type = [
+                    "monthly_averaged_reanalysis",
+                    "monthly_averaged_reanalysis_by_hour_of_day"
+                ]
+            multi_strings = [
+                {"name": "time", "value": [hour]},
+                {"name": "month", "value": [month]},
+                {"name": "year", "value": [year]},
+                {
+                    "name": "variable",
+                    "value": [
+                        "10m_u_component_of_wind",
+                        "10m_v_component_of_wind",
+                        "2m_dewpoint_temperature",
+                        "2m_temperature",
+                        "mean_sea_level_pressure",
+                        "mean_wave_direction",
+                        "mean_wave_period",
+                        "sea_surface_temperature",
+                        "significant_height_of_combined_wind_waves_and_swell",
+                        "surface_pressure",
+                        "total_precipitation"
+                    ],
+                },
+                {"name": "product_type", "value": product_type},
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+
+        @staticmethod
+        def convert_get_ecmwf_era5land_monthly_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            hour = start_date[11:14] + "00"
+            hour_num = int(start_date[11:13])
+            if hour_num % 3 == 0:
+                product_type = [
+                    "monthly_averaged_reanalysis",
+                    "monthly_averaged_reanalysis_by_hour_of_day",
+                ]
+            else:
+                product_type = ["monthly_averaged_reanalysis_by_hour_of_day"]
+            multi_strings = [
+                {"name": "time", "value": [hour]},
+                {"name": "product_type", "value": product_type},
+                {
+                    "name": "variable",
+                    "value": [
+                        "snow_albedo",
+                        "snow_cover",
+                        "snow_density",
+                        "snow_depth",
+                        "snow_depth_water_equivalent",
+                        "snowfall",
+                        "snowmelt",
+                        "temperature_of_snow_layer",
+                        "skin_reservoir_content",
+                        "volumetric_soil_water_layer_1",
+                        "volumetric_soil_water_layer_2",
+                        "volumetric_soil_water_layer_3",
+                        "volumetric_soil_water_layer_4",
+                        "forecast_albedo",
+                        "surface_latent_heat_flux",
+                        "surface_net_solar_radiation",
+                        "surface_net_thermal_radiation",
+                        "surface_sensible_heat_flux",
+                        "surface_solar_radiation_downwards",
+                        "surface_thermal_radiation_downwards",
+                        "evaporation_from_bare_soil",
+                        "evaporation_from_open_water_surfaces_excluding_oceans",
+                        "evaporation_from_the_top_of_canopy",
+                        "evaporation_from_vegetation_transpiration",
+                        "potential_evaporation",
+                        "runoff",
+                        "snow_evaporation",
+                        "sub_surface_runoff",
+                        "surface_runoff",
+                        "total_evaporation",
+                        "10m_u_component_of_wind",
+                        "10m_v_component_of_wind",
+                        "surface_pressure",
+                        "total_precipitation",
+                        "leaf_area_index_high_vegetation",
+                        "leaf_area_index_low_vegetation",
+                    ],
+                },
+                {"name": "year", "value": [year]},
+                {"name": "month", "value": [month]},
+            ]
+            string_choices = [{"name": "format", "value": "grib"}]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_glaciers_em_change_params(start_date):
+            year = start_date[:4]
+            file_versions = [
+                            "20170405",
+                            "20171004",
+                            "20180601",
+                            "20181103",
+                            "20191202",
+                            "20200824"
+            ]
+            file_version = [fv for fv in file_versions if fv.startswith(year)]
+            if len(file_version)==0:
+                file_version = file_versions
+            multi_strings = [
+                                {"name": "product_type",
+                                    "value": ["elevation_change", "mass_balance"]
+                                },
+                                {"name": "file_version", "value": file_version}
+            ]
+            string_choices = [{"name": "format", "value": "tgz"},
+                              {"name": "variable", "value": "all"}
+            ]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_sea_level_black_sea_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            multi_strings = [
+                                {"name": "year", "value": [year]},
+                                {"name": "month", "value": [month]},
+                                {"name": "day", "value": [day]},
+            ]
+            string_choices = [{"name": "format", "value": "tgz"},
+                              {"name": "variable", "value": "all"}
+            ]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+        
+        @staticmethod
+        def convert_get_ecmwf_uerra_europe_sl_params(start_date):
+            year = start_date[:4]
+            month = start_date[5:7]
+            day = start_date[8:10]
+            time = start_date[11:16]
+            multi_strings = [
+                {"name": "time", "value": ["00:00", "06:00", "12:00", "18:00"]},
+                # {"name": "day", "value": [str(d).zfill(2) for d in range(1, 32)]},
+                # {"name": "year", "value": [str(y).zfill(4) for y in range(1961, 2020)]},
+                {"name": "year", "value": [year]},
+                {"name": "month", "value": [str(month).zfill(2)]},
+                {"name": "day", "value": [str(day).zfill(2)]},
+                {"name": "time", "value": [time]},
+            ]
+            string_choices = [
+                                {"name": "origin", "value": "mescan_surfex"},
+                                {"name": "variable", "value": "10m_wind_direction"},
+                                {"name": "format", "value": "grib"}
+            ]
+            return {
+                "multiStringSelectValues": multi_strings,
+                "stringChoiceValues": string_choices,
+            }
+
+    for match in re.findall(r"\([A-Za-z]+\)", search_param):
+        param = match.replace("(", "").replace(")", "")
+        if param in kwargs:
+            search_param = search_param.replace(param, kwargs[param])
 
     # if stac extension colon separator `:` is in search params, parse it to prevent issues with vformat
     if re.search(r"{[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]*}", search_param):
@@ -614,8 +2227,12 @@ def format_metadata(search_param, *args, **kwargs):
             r"{([a-zA-Z0-9_-]*):([a-zA-Z0-9_-]*)}", r"{\1_COLON_\2}", search_param
         )
         kwargs = {k.replace(":", "_COLON_"): v for k, v in kwargs.items()}
-    # if re.search(r"\([a-zA-Z0-9_-]*:[a-zA-Z0-9_-]*", search_param):
-    #     search_param = search_param.replace(":", "_COLON_")
+
+    while re.search(r"\([a-zA-Z0-9_-]*:[a-zA-Z0-9_-]*", search_param):
+        search_param = re.sub(
+            r"(\([a-zA-Z0-9_-]*):([a-zA-Z0-9_-]*)", r"\1_COLON_\2", search_param
+        )
+
     return MetadataFormatter().vformat(search_param, args, kwargs)
 
 
@@ -1005,16 +2622,22 @@ def format_query_params(product_type, config, **kwargs):
 
 
 def _resolve_hashes(formatted_query_param):
-    while '["' in formatted_query_param:
-        ind_open = formatted_query_param.find('["')
-        ind_close = formatted_query_param.find('"]')
-        hash_start = formatted_query_param[:ind_open].rfind("{")
-        h = orjson.loads(formatted_query_param[hash_start:ind_open])
-        key = formatted_query_param[ind_open + 2 : ind_close]
+    while '}["' in formatted_query_param:
+        ind_open = formatted_query_param.find('}["')
+        ind_close = formatted_query_param.find('"]', ind_open)
+        hash_start = formatted_query_param[:ind_open].rfind(": {") + 2
+        h = orjson.loads(formatted_query_param[hash_start : ind_open + 1])
+        ind_key_start = formatted_query_param.find('"', ind_open) + 1
+        key = formatted_query_param[ind_key_start:ind_close]
         value = h[key]
-        formatted_query_param = formatted_query_param.replace(
-            formatted_query_param[hash_start : ind_close + 2], '"' + value + '"'
-        )
+        if isinstance(value, str):
+            formatted_query_param = formatted_query_param.replace(
+                formatted_query_param[hash_start : ind_close + 2], '"' + value + '"'
+            )
+        else:
+            formatted_query_param = formatted_query_param.replace(
+                formatted_query_param[hash_start : ind_close + 2], json.dumps(value)
+            )
     return formatted_query_param
 
 

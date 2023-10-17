@@ -15,27 +15,38 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import base64
 import logging
 import os
 import re
 import urllib.parse
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 import requests
 from requests import RequestException
 from shapely import geometry, wkb, wkt
 from shapely.errors import ShapelyError
+from shapely.geometry.base import BaseGeometry
 
 from eodag.api.product.drivers import DRIVERS, NoDriver
+from eodag.api.product.drivers.base import DatasetDriver
 from eodag.api.product.metadata_mapping import NOT_AVAILABLE, NOT_MAPPED
-from eodag.plugins.download.base import DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_DOWNLOAD_WAIT
+from eodag.plugins.authentication.base import Authentication
 from eodag.utils import (
     DEFAULT_STREAM_REQUESTS_TIMEOUT,
     USER_AGENT,
+    DEFAULT_DOWNLOAD_TIMEOUT,
+    DEFAULT_DOWNLOAD_WAIT,
     ProgressCallback,
     get_geometry_from_various,
 )
 from eodag.utils.exceptions import DownloadError, MisconfiguredError
+
+if TYPE_CHECKING:
+    from eodag.plugins.apis.base import Api
+    from eodag.plugins.download.base import Download
 
 try:
     from shapely.errors import GEOSException
@@ -86,7 +97,16 @@ class EOProduct(object):
         mentioned CRS.
     """
 
-    def __init__(self, provider, properties, **kwargs):
+    provider: str
+    properties: Dict[str, Any]
+    product_type: Optional[str]
+    location: str
+    remote_location: str
+    search_kwargs: Any
+    geometry: BaseGeometry
+    search_intersection: Optional[BaseGeometry]
+
+    def __init__(self, provider: str, properties: Dict[str, Any], **kwargs: Any) -> None:
         self.provider = provider
         self.product_type = kwargs.get("productType")
         self.location = self.remote_location = properties.get("downloadLink", "")
@@ -160,7 +180,7 @@ class EOProduct(object):
         self.downloader = None
         self.downloader_auth = None
 
-    def as_dict(self):
+    def as_dict(self) -> Dict[str, Any]:
         """Builds a representation of EOProduct as a dictionary to enable its geojson
         serialization
 
@@ -171,7 +191,8 @@ class EOProduct(object):
         search_intersection = None
         if self.search_intersection is not None:
             search_intersection = geometry.mapping(self.search_intersection)
-        geojson_repr = {
+
+        geojson_repr: Dict[str, Any] = {
             "type": "Feature",
             "geometry": geometry.mapping(self.geometry),
             "id": self.properties["id"],
@@ -179,19 +200,18 @@ class EOProduct(object):
                 "eodag_product_type": self.product_type,
                 "eodag_provider": self.provider,
                 "eodag_search_intersection": search_intersection,
+                **{
+                    key: value
+                    for key, value in self.properties.items()
+                    if key not in ("geometry", "id")
+                },
             },
         }
-        geojson_repr["properties"].update(
-            {
-                key: value
-                for key, value in self.properties.items()
-                if key not in ("geometry", "id")
-            }
-        )
+
         return geojson_repr
 
     @classmethod
-    def from_geojson(cls, feature):
+    def from_geojson(cls, feature: Dict[str, Any]):
         """Builds an :class:`~eodag.api.product._product.EOProduct` object from its
         representation as geojson
 
@@ -226,7 +246,9 @@ class EOProduct(object):
                 f"Unable to get {e.args[0]} key from EOProduct.properties"
             )
 
-    def register_downloader(self, downloader, authenticator):
+    def register_downloader(
+        self, downloader: Union[Api, Download], authenticator: Optional[Authentication]
+    ) -> None:
         """Give to the product the information needed to download itself.
 
         :param downloader: The download method that it can use
@@ -275,11 +297,11 @@ class EOProduct(object):
 
     def download(
         self,
-        progress_callback=None,
-        wait=DEFAULT_DOWNLOAD_WAIT,
-        timeout=DEFAULT_DOWNLOAD_TIMEOUT,
-        **kwargs,
-    ):
+        progress_callback: Optional[ProgressCallback] = None,
+        wait: int = DEFAULT_DOWNLOAD_WAIT,
+        timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
+        **kwargs: Any,
+    ) -> str:
         """Download the EO product using the provided download plugin and the
         authenticator if necessary.
 
@@ -360,7 +382,9 @@ class EOProduct(object):
 
         return fs_path
 
-    def _init_progress_bar(self, progress_callback):
+    def _init_progress_bar(
+        self, progress_callback: Optional[ProgressCallback]
+    ) -> Tuple[ProgressCallback, bool]:
         # progress bar init
         if progress_callback is None:
             progress_callback = ProgressCallback(position=1)
@@ -373,9 +397,14 @@ class EOProduct(object):
             progress_callback.unit_scale = True
         progress_callback.desc = str(self.properties.get("id", ""))
         progress_callback.refresh()
-        return [progress_callback, close_progress_callback]
+        return (progress_callback, close_progress_callback)
 
-    def get_quicklook(self, filename=None, base_dir=None, progress_callback=None):
+    def get_quicklook(
+        self,
+        filename: Optional[str] = None,
+        base_dir: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> str:
         """Download the quicklook image of a given EOProduct from its provider if it
         exists.
 
@@ -395,7 +424,7 @@ class EOProduct(object):
         :rtype: str
         """
 
-        def format_quicklook_address():
+        def format_quicklook_address() -> None:
             """If the quicklook address is a Python format string, resolve the
             formatting with the properties of the product."""
             fstrmatch = re.match(r".*{.+}*.*", self.properties["quicklook"])
@@ -490,7 +519,7 @@ class EOProduct(object):
 
         return quicklook_file
 
-    def get_driver(self):
+    def get_driver(self) -> DatasetDriver:
         """Get the most appropriate driver"""
         try:
             for driver_conf in DRIVERS:
